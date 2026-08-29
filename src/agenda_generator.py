@@ -63,11 +63,17 @@ _DEFAULT_POINTS_TEMPLATE = [
 ]
 
 
-def build_agenda(year_month: str, theme: str) -> AgendaDocument:
+def build_agenda(year_month: str, theme: str, points: list[str] | None = None) -> AgendaDocument:
+    """アジェンダを組み立てる。
+
+    points（テーマ固有の討議ポイント）が渡された場合はそれを使い、
+    無い場合（自分でテーマを入力した場合やOpenAI提案など）は汎用テンプレートにフォールバックする。
+    """
     company = load_company()
     meeting_day = third_friday(year_month)
     meeting_no = len(load_theme_history()) + 1
     roster = member_labels(load_members())
+    theme_points = list(points) if points else list(_DEFAULT_POINTS_TEMPLATE)
     return AgendaDocument(
         meeting_no=meeting_no,
         year_month=year_month,
@@ -78,7 +84,7 @@ def build_agenda(year_month: str, theme: str) -> AgendaDocument:
         meeting_date=meeting_day.isoformat(),
         datetime_label=format_datetime_label(meeting_day),
         attendees=roster,
-        theme_points=list(_DEFAULT_POINTS_TEMPLATE),
+        theme_points=theme_points,
         reference_links=list(_DEFAULT_LINKS),
         action_owner=roster[0] if roster else "",
         due_label="次回委員会まで",

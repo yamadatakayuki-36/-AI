@@ -105,12 +105,12 @@ def refresh_agenda_outputs(doc: AgendaDocument) -> None:
     st.session_state.agenda_pptx = agenda_to_pptx_bytes(doc)
 
 
-def go_to_agenda(theme: str) -> None:
+def go_to_agenda(theme: str, points: list[str] | None = None) -> None:
     if st.session_state.flow_started_at is not None:
         st.session_state.measured_tool_seconds = max(
             1, int(time.time() - st.session_state.flow_started_at)
         )
-    agenda_doc = build_agenda(st.session_state.year_month, theme)
+    agenda_doc = build_agenda(st.session_state.year_month, theme, points=points)
     refresh_agenda_outputs(agenda_doc)
     st.session_state.selected_theme = theme
     st.session_state.step = 3
@@ -275,7 +275,7 @@ for i, c in enumerate(slots):
             use_container_width=True,
             disabled=c is None,
             on_click=go_to_agenda,
-            args=(c.title if c else "",),
+            args=(c.title if c else "", c.points if c else None),
         )
 
 st.markdown("気に入らない場合は「他の候補を出す」、または自分でテーマを入力できます")
