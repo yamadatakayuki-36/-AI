@@ -442,7 +442,9 @@ with st.expander("実測値を記録する（発表用）", expanded=False):
         "ツール利用の所要時間（分）",
         min_value=0.1,
         max_value=60.0,
-        value=float(tool if measured_sec is None else round(measured_sec / 60, 1)),
+        # 操作が数秒で終わると round(measured_sec / 60, 1) が 0.0 になり、
+        # min_value(0.1) を下回ってStreamlitValueBelowMinErrorになるため下限でクランプする
+        value=max(0.1, float(tool if measured_sec is None else round(measured_sec / 60, 1))),
         step=0.1,
     )
     if st.button("この数値を発表用に保存", type="primary"):
