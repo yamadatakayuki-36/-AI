@@ -1,9 +1,12 @@
-"""アジェンダ（次第）の組み立てとファイル出力（テキスト／Word）。
+"""アジェンダ（議事録）の組み立てとファイル出力（テキスト／Word）。
 
-会議の「開催概要」と、時間配分付きの「議事次第」（開会→本日のテーマ討議→
-決定事項→連絡事項→閉会）を組み立てる。議事次第は theme_points から
-build_agenda_items() が都度組み立てるため、STEP3の編集フォームで
-theme_points を書き換えれば、時間配分もそれに合わせて自動的に再計算される。
+実際の安全衛生委員会の議事録（■前回振り返り／■気づき事項／■テーマ「◯◯」
+背景＋確認・共有／次回開催）の構成に合わせている。時間配分付きの進行表ではなく、
+この「引き継ぎ＋今回のテーマ」という実務の議事録スタイルを採用している。
+
+前回振り返り・気づき事項は自由記述（1行＝1項目）。行に「→」を含めると、
+項目とその対応・フォローアップの2段構成として出力される。
+例：「9/20 熱中症飲料終了　山田 → QRコードは各自保管、来年も使用」
 """
 
 from __future__ import annotations
@@ -18,8 +21,18 @@ from data_loader import load_company, load_members, load_theme_history, member_l
 
 try:
     from docx import Document
+    from docx.shared import Pt
 except ImportError:  # python-docx 未インストール時のフォールバック
     Document = None
+    Pt = None
+
+
+@dataclass
+class NoteLine:
+    """前回振り返り・気づき事項の1項目（本文＋任意のフォローアップ）。"""
+
+    text: str
+    followup: str | None = None
 
 
 @dataclass
@@ -37,14 +50,10 @@ class AgendaDocument:
     reference_links: list[dict] = field(default_factory=list)
     action_owner: str = ""
     due_label: str = ""
-
-
-@dataclass
-class AgendaItem:
-    no: int
-    title: str
-    duration_min: int
-    details: list[str] = field(default_factory=list)
+    background: str = ""
+    previous_review: list[str] = field(default_factory=list)
+    awareness_items: list[str] = field(default_factory=list)
+    next_meeting_label: str = ""
 
 
 def third_friday(year_month: str) -> date:
@@ -54,14 +63,44 @@ def third_friday(year_month: str) -> date:
     return fridays[2] if len(fridays) >= 3 else fridays[-1]
 
 
+def _next_year_month(year_month: str) -> str:
+    year, month = (int(x) for x in year_month.split("-"))
+    if month == 12:
+        return f"{year + 1}-01"
+    return f"{year}-{month + 1:02d}"
+
+
 def format_datetime_label(d: date) -> str:
     weekdays = ["月", "火", "水", "木", "金", "土", "日"]
     return f"{d.year}年{d.month}月{d.day}日（{weekdays[d.weekday()]}）14:00〜15:00"
 
 
+def format_next_meeting_label(d: date) -> str:
+    weekdays = ["月", "火", "水", "木", "金", "土", "日"]
+    return f"{d.year}年{d.month}月{d.day}日（{weekdays[d.weekday()]}）14:00〜"
+
+
 def safe_filename_theme(theme: str) -> str:
     cleaned = re.sub(r'[\\/:*?"<>|\s]+', "_", theme.strip())
     return cleaned[:40] or "theme"
+
+
+def parse_note_lines(text: str) -> list[NoteLine]:
+    """複数行テキストを NoteLine のリストに変換する。
+
+    各行に「→」が含まれていれば、その前後を項目本文とフォローアップに分ける。
+    """
+    result: list[NoteLine] = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if "→" in line:
+            head, _, tail = line.partition("→")
+            result.append(NoteLine(head.strip(), tail.strip() or None))
+        else:
+            result.append(NoteLine(line))
+    return result
 
 
 _DEFAULT_LINKS = [
@@ -76,22 +115,22 @@ _DEFAULT_POINTS_TEMPLATE = [
     "次回までのアクションと担当決め",
 ]
 
-# 60分（14:00〜15:00）の会議を想定した時間配分。本日のテーマ討議に最も時間を割く。
-_OPENING_MIN = 5
-_THEME_TOTAL_MIN = 35
-_DECISION_MIN = 10
-_NOTICE_MIN = 5
-_CLOSING_MIN = 5
 
+def build_agenda(
+    year_month: str,
+    theme: str,
+    points: list[str] | None = None,
+    reason: str = "",
+) -> AgendaDocument:
+    """アジェンダ（議事録）を組み立てる。
 
-def build_agenda(year_month: str, theme: str, points: list[str] | None = None) -> AgendaDocument:
-    """アジェンダを組み立てる。
-
-    points（テーマ固有の討議ポイント）が渡された場合はそれを使い、
-    無い場合（自分でテーマを入力した場合やOpenAI提案など）は汎用テンプレートにフォールバックする。
+    points（テーマ固有の討議ポイント）とreason（提案理由＝背景）が渡された場合は
+    それを使い、無い場合（自分でテーマを入力した場合やOpenAI提案など）は
+    汎用テンプレート・空欄にフォールバックする。
     """
     company = load_company()
     meeting_day = third_friday(year_month)
+    next_meeting_day = third_friday(_next_year_month(year_month))
     meeting_no = len(load_theme_history()) + 1
     roster = member_labels(load_members())
     theme_points = list(points) if points else list(_DEFAULT_POINTS_TEMPLATE)
@@ -109,57 +148,58 @@ def build_agenda(year_month: str, theme: str, points: list[str] | None = None) -
         reference_links=list(_DEFAULT_LINKS),
         action_owner=roster[0] if roster else "",
         due_label="次回委員会まで",
+        background=reason,
+        previous_review=[],
+        awareness_items=[],
+        next_meeting_label=format_next_meeting_label(next_meeting_day),
     )
 
 
-def build_agenda_items(doc: AgendaDocument) -> list[AgendaItem]:
-    """開会〜閉会までの時間配分付き議事次第を組み立てる。
-
-    討議ポイント（theme_points）の数に応じて、本日のテーマ討議に割り当てた
-    時間を均等割りする。theme_pointsが編集されれば、ここで再計算されるため
-    常に内容と時間配分が連動する。
-    """
-    n_points = max(len(doc.theme_points), 1)
-    base = _THEME_TOTAL_MIN // n_points
-    remainder = _THEME_TOTAL_MIN - base * n_points
-    point_minutes = [base + (1 if i < remainder else 0) for i in range(n_points)]
-    theme_details = [f"{p}（約{m}分）" for p, m in zip(doc.theme_points, point_minutes)]
-
-    return [
-        AgendaItem(1, "開会・前回議事の確認", _OPENING_MIN, ["前回の議事録・決定事項の確認"]),
-        AgendaItem(2, f"本日のテーマ：{doc.theme}", _THEME_TOTAL_MIN, theme_details),
-        AgendaItem(
-            3,
-            "対策・アクションの決定",
-            _DECISION_MIN,
-            [f"担当：{doc.action_owner or '未定'}　期限：{doc.due_label or '未定'}"],
-        ),
-        AgendaItem(4, "連絡事項・次回予定", _NOTICE_MIN, []),
-        AgendaItem(5, "閉会", _CLOSING_MIN, []),
-    ]
-
-
 def agenda_to_text(doc: AgendaDocument) -> str:
-    items = build_agenda_items(doc)
     lines = [
-        f"第{doc.meeting_no}回 {doc.committee_name} 開催案内",
-        f"{doc.company_name}",
-        "",
-        "【開催概要】",
+        f"第{doc.meeting_no}回 {doc.company_name} {doc.committee_name} 議事録",
         f"日時：{doc.datetime_label}",
         f"場所：{doc.meeting_place}",
-        f"出席予定者：{'、'.join(doc.attendees)}",
-        f"議題：{doc.theme}",
-        "",
-        "【議事次第】",
+        f"出席者：{'、'.join(doc.attendees)}",
     ]
-    for item in items:
-        lines.append(f"{item.no}. {item.title}（{item.duration_min}分）")
-        lines += [f"　　・{d}" for d in item.details]
+
+    if doc.previous_review:
+        lines += ["", "■前回振り返り"]
+        for note in parse_note_lines("\n".join(doc.previous_review)):
+            lines.append(f"・{note.text}")
+            if note.followup:
+                lines.append(f"　→{note.followup}")
+
+    if doc.awareness_items:
+        lines += ["", "■気づき事項"]
+        for note in parse_note_lines("\n".join(doc.awareness_items)):
+            lines.append(f"・{note.text}")
+            if note.followup:
+                lines.append(f"　→{note.followup}")
+
+    lines += ["", f"■テーマ「{doc.theme}」"]
+    if doc.background:
+        lines.append(f"背景：{doc.background}")
+    lines += ["", "確認・共有"]
+    lines += [f"・{p}" for p in doc.theme_points]
+    lines += ["", f"担当：{doc.action_owner}　期限：{doc.due_label}"]
+
+    if doc.next_meeting_label:
+        lines += ["", f"次回：{doc.next_meeting_label}"]
+
     if doc.reference_links:
         lines += ["", "【参考資料】"]
         lines += [f"　・{link['title']}：{link['url']}" for link in doc.reference_links]
     return "\n".join(lines)
+
+
+def _add_note_paragraphs(document, lines: list[str]) -> None:
+    for note in parse_note_lines("\n".join(lines)):
+        document.add_paragraph(note.text, style="List Bullet")
+        if note.followup:
+            p = document.add_paragraph(f"→ {note.followup}")
+            if Pt is not None:
+                p.paragraph_format.left_indent = Pt(28)
 
 
 def agenda_to_docx_bytes(doc: AgendaDocument) -> bytes:
@@ -167,36 +207,34 @@ def agenda_to_docx_bytes(doc: AgendaDocument) -> bytes:
         # python-docx 未インストール時はテキストを返す（拡張子はそのまま.docxとして保存される）
         return agenda_to_text(doc).encode("utf-8")
 
-    items = build_agenda_items(doc)
     document = Document()
-    document.add_heading(f"第{doc.meeting_no}回 {doc.committee_name} 開催案内", level=1)
-    document.add_paragraph(doc.company_name)
+    document.add_heading(f"第{doc.meeting_no}回 {doc.company_name} {doc.committee_name} 議事録", level=1)
+    document.add_paragraph(f"日時：{doc.datetime_label}")
+    document.add_paragraph(f"場所：{doc.meeting_place}")
+    document.add_paragraph(f"出席者：{'、'.join(doc.attendees)}")
 
-    document.add_heading("開催概要", level=2)
-    overview_rows = [
-        ("日時", doc.datetime_label),
-        ("場所", doc.meeting_place),
-        ("出席予定者", "、".join(doc.attendees)),
-        ("議題", doc.theme),
-    ]
-    overview_table = document.add_table(rows=len(overview_rows), cols=2)
-    overview_table.style = "Light Grid Accent 1"
-    for row, (label, value) in zip(overview_table.rows, overview_rows):
-        row.cells[0].text = label
-        row.cells[1].text = value
+    if doc.previous_review:
+        document.add_heading("前回振り返り", level=2)
+        _add_note_paragraphs(document, doc.previous_review)
 
-    document.add_heading("議事次第", level=2)
-    agenda_table = document.add_table(rows=1, cols=3)
-    agenda_table.style = "Light Grid Accent 1"
-    header_cells = agenda_table.rows[0].cells
-    header_cells[0].text = "項目"
-    header_cells[1].text = "内容"
-    header_cells[2].text = "時間"
-    for item in items:
-        cells = agenda_table.add_row().cells
-        cells[0].text = f"{item.no}. {item.title}"
-        cells[1].text = "\n".join(item.details) if item.details else "－"
-        cells[2].text = f"{item.duration_min}分"
+    if doc.awareness_items:
+        document.add_heading("気づき事項", level=2)
+        _add_note_paragraphs(document, doc.awareness_items)
+
+    document.add_heading(f"テーマ「{doc.theme}」", level=2)
+    if doc.background:
+        p = document.add_paragraph()
+        p.add_run("背景：").bold = True
+        p.add_run(doc.background)
+
+    document.add_heading("確認・共有", level=3)
+    for point in doc.theme_points:
+        document.add_paragraph(point, style="List Bullet")
+    document.add_paragraph(f"担当：{doc.action_owner}　期限：{doc.due_label}")
+
+    if doc.next_meeting_label:
+        document.add_heading("次回開催", level=2)
+        document.add_paragraph(doc.next_meeting_label)
 
     if doc.reference_links:
         document.add_heading("参考資料", level=2)

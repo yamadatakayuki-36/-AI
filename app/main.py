@@ -105,12 +105,12 @@ def refresh_agenda_outputs(doc: AgendaDocument) -> None:
     st.session_state.agenda_pptx = agenda_to_pptx_bytes(doc)
 
 
-def go_to_agenda(theme: str, points: list[str] | None = None) -> None:
+def go_to_agenda(theme: str, points: list[str] | None = None, reason: str = "") -> None:
     if st.session_state.flow_started_at is not None:
         st.session_state.measured_tool_seconds = max(
             1, int(time.time() - st.session_state.flow_started_at)
         )
-    agenda_doc = build_agenda(st.session_state.year_month, theme, points=points)
+    agenda_doc = build_agenda(st.session_state.year_month, theme, points=points, reason=reason)
     refresh_agenda_outputs(agenda_doc)
     st.session_state.selected_theme = theme
     st.session_state.step = 3
@@ -275,7 +275,7 @@ for i, c in enumerate(slots):
             use_container_width=True,
             disabled=c is None,
             on_click=go_to_agenda,
-            args=(c.title if c else "", c.points if c else None),
+            args=(c.title if c else "", c.points if c else None, c.reason if c else ""),
         )
 
 st.markdown("気に入らない場合は「他の候補を出す」、または自分でテーマを入力できます")
@@ -371,6 +371,9 @@ if doc is not None:
     action_default = doc.action_owner
     due_default = doc.due_label
     points_default = "\n".join(doc.theme_points)
+    background_default = doc.background
+    previous_review_default = "\n".join(doc.previous_review)
+    awareness_default = "\n".join(doc.awareness_items)
 else:
     default_day = third_friday(st.session_state.year_month)
     default_attendees = roster
@@ -378,8 +381,11 @@ else:
     action_default = ""
     due_default = ""
     points_default = ""
+    background_default = ""
+    previous_review_default = ""
+    awareness_default = ""
 
-with st.expander("アジェンダを手直しする（日時・出席者・討議ポイント）", expanded=False):
+with st.expander("アジェンダを手直しする（日時・出席者・討議ポイント・前回振り返り等）", expanded=False):
     with st.form("agenda_edit_form"):
         meeting_day = st.date_input("開催日", value=default_day)
         meeting_place = st.text_input("場所", value=place_default)
@@ -388,12 +394,25 @@ with st.expander("アジェンダを手直しする（日時・出席者・討�
             options=roster,
             default=[a for a in default_attendees if a in roster],
         )
+        st.markdown("##### 前回振り返り・気づき事項")
+        st.caption(
+            "1行＝1項目。「本文 → 対応・フォローアップ」の形式で書くと、議事録上で2段に分けて表示されます"
+            "（例：9/20 熱中症飲料終了　山田 → QRコードは各自保管、来年も使用）"
+        )
+        previous_review_text = st.text_area(
+            "前回振り返り（任意）", value=previous_review_default, height=90
+        )
+        awareness_text = st.text_area("気づき事項（任意）", value=awareness_default, height=90)
+        st.markdown("##### 今回のテーマ")
+        background_text = st.text_area("背景（なぜ今回このテーマなのか）", value=background_default, height=70)
         action_owner = st.text_input("担当", value=action_default)
         due_label = st.text_input("期限", value=due_default)
-        points_text = st.text_area("討議ポイント（1行＝1項目）", value=points_default, height=140)
+        points_text = st.text_area("確認・共有（討議ポイント／1行＝1項目）", value=points_default, height=140)
         submitted = st.form_submit_button("反映してプレビュー更新", type="primary")
         if submitted and doc is not None:
             points = [p.strip(" ・\t") for p in points_text.splitlines() if p.strip()]
+            previous_review = [ln.strip() for ln in previous_review_text.splitlines() if ln.strip()]
+            awareness_items = [ln.strip() for ln in awareness_text.splitlines() if ln.strip()]
             updated = AgendaDocument(
                 meeting_no=doc.meeting_no,
                 year_month=doc.year_month,
@@ -408,6 +427,10 @@ with st.expander("アジェンダを手直しする（日時・出席者・討�
                 reference_links=doc.reference_links,
                 action_owner=action_owner.strip() or doc.action_owner,
                 due_label=due_label.strip() or doc.due_label,
+                background=background_text.strip(),
+                previous_review=previous_review,
+                awareness_items=awareness_items,
+                next_meeting_label=doc.next_meeting_label,
             )
             refresh_agenda_outputs(updated)
 
